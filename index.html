@@ -566,6 +566,7 @@
       <button class="btn-ghost" id="btnCamRefresh">목록 새로고침</button>
       <button class="btn-ghost" id="btnCamTest">미리보기</button>
     </div>
+    <div class="staff-row"><span>해상도 요청</span><div class="seg" id="resOpts" style="flex-wrap:wrap; justify-content:flex-end;"></div></div>
     <video id="camTest" autoplay playsinline muted></video>
     <div class="staff-sub" id="camNote">웹캠을 꽂았는데 안 보이면 '목록 새로고침'을 눌러줘요. 고른 카메라는 이 태블릿에 저장돼요.</div>
     <div class="staff-sub" style="color:var(--yellow); font-size:15px;">내 캐릭터 등록</div>
@@ -606,6 +607,14 @@ let mirrorMode = MIRROR_DEFAULT;
 const BEAUTY_LEVEL = 1;
 let beautyLevel = BEAUTY_LEVEL;
 let camDeviceId = null, camDeviceLabel = '';   // 스태프 메뉴에서 고른 카메라 (null = 자동)
+let camRes = 'auto';                            // 카메라 해상도 요청: auto / 720 / 1080 / 1440 / 1944
+const CAM_RES = {
+  auto: { label:'자동',  w:1280, h:960 },
+  720:  { label:'720p',  w:1280, h:720 },
+  1080: { label:'1080p', w:1920, h:1080 },
+  1440: { label:'1440p', w:2560, h:1440 },
+  1944: { label:'1944p', w:2592, h:1944 }
+};
 // 운영 방식: solo(이 기기에서 바로 인쇄) / booth(촬영대: 완성 사진을 서버로 전송) / printer(출력대: 서버 사진을 받아 인쇄)
 let opMode = 'solo', opBooth = 'A';
 try{
@@ -614,12 +623,13 @@ try{
     if(INTERVAL_CHOICES.includes(st.interval)) intervalSec = st.interval;
     if(typeof st.cam === 'string' && st.cam) camDeviceId = st.cam;
     if(typeof st.camLabel === 'string') camDeviceLabel = st.camLabel;
+    if(st.camRes && CAM_RES[st.camRes]) camRes = String(st.camRes);
     if(['solo','booth','printer'].includes(st.mode)) opMode = st.mode;
     if(st.booth === 'A' || st.booth === 'B') opBooth = st.booth;
   }
 }catch(e){}
 function saveStaffSettings(){
-  try{ localStorage.setItem('gm4cut_staff', JSON.stringify({ interval:intervalSec, cam:camDeviceId, camLabel:camDeviceLabel, mode:opMode, booth:opBooth })); }catch(e){}
+  try{ localStorage.setItem('gm4cut_staff', JSON.stringify({ interval:intervalSec, cam:camDeviceId, camLabel:camDeviceLabel, camRes, mode:opMode, booth:opBooth })); }catch(e){}
 }
 
 // ===== 서버 설정 (Supabase) — 아래 두 값은 공개해도 되는 값이에요 (비밀번호/secret 키는 절대 넣지 마세요) =====
@@ -700,7 +710,8 @@ function hideCamError(){
 // 스태프 메뉴에서 고른 카메라로 스트림을 엶. 저장된 카메라가 없어졌으면 이름으로 다시 찾고, 그래도 없으면 기본 카메라로.
 let camFellBack = false;
 async function openCameraStream(){
-  const size = { width:{ ideal:1280 }, height:{ ideal:960 } };
+  const rs = CAM_RES[camRes] || CAM_RES.auto;
+  const size = { width:{ ideal:rs.w }, height:{ ideal:rs.h }, frameRate:{ ideal:30 } };
   camFellBack = false;
   if(camDeviceId){
     try{
@@ -738,7 +749,9 @@ async function startCamera(){
     video.srcObject = stream;
     try{ await video.play(); }catch(e){ /* some browsers need a tap; ignore */ }
     hideCamError();
-    $('camStatus').textContent = camFellBack ? '준비됨 (고른 카메라를 못 찾아 기본 카메라로 켰어요)' : '준비됨';
+    const ts = (stream.getVideoTracks()[0] || {}).getSettings ? stream.getVideoTracks()[0].getSettings() : {};
+    const info = ts.width ? ` · ${ts.width}x${ts.height}${ts.frameRate ? ' ' + Math.round(ts.frameRate) + 'fps' : ''}` : '';
+    $('camStatus').textContent = (camFellBack ? '준비됨 (고른 카메라를 못 찾아 기본 카메라로 켰어요)' : '준비됨') + info;
     $('btnStartShoot').disabled = false;
     ensureKeyLoop();
     if(video.videoWidth) updateCropGuide(); else video.addEventListener('loadedmetadata', updateCropGuide, { once:true });
@@ -2827,7 +2840,7 @@ async function startCamTest(){
     v.srcObject = camTestStream; v.style.display = 'block';
     try{ await v.play(); }catch(e){}
     const t = camTestStream.getVideoTracks()[0], s = t ? t.getSettings() : {};
-    note.textContent = (t ? t.label : '') + (s.width ? ` · ${s.width}x${s.height}` : '') + (camFellBack ? ' (고른 카메라를 못 찾아 기본 카메라)' : '');
+    note.textContent = '실제 화면: ' + (t ? t.label : '') + (s.width ? ` · ${s.width}x${s.height}` : '') + (s.frameRate ? ` · ${Math.round(s.frameRate)}fps` : '') + (camFellBack ? ' (고른 카메라를 못 찾아 기본 카메라)' : '');
   }catch(e){
     note.textContent = e.name === 'NotReadableError'
       ? '이 카메라는 지금 다른 곳에서 사용 중이에요. 다른 앱/탭을 닫고 다시 눌러줘요.'
@@ -2841,6 +2854,18 @@ $('camSelect').addEventListener('change', ()=>{
   saveStaffSettings();
   startCamTest();
 });
+function renderResOpts(){
+  const wrap = $('resOpts');
+  wrap.innerHTML = '';
+  ['auto', '720', '1080', '1440', '1944'].forEach(k=>{
+    const b = document.createElement('button');
+    b.textContent = CAM_RES[k].label;
+    b.className = k === camRes ? 'on' : '';
+    b.addEventListener('click', ()=>{ camRes = k; saveStaffSettings(); renderResOpts(); startCamTest(); });
+    wrap.appendChild(b);
+  });
+}
+renderResOpts();
 $('btnCamRefresh').addEventListener('click', ()=> refreshCamList(true));
 $('btnCamTest').addEventListener('click', startCamTest);
 if(navigator.mediaDevices && navigator.mediaDevices.addEventListener){

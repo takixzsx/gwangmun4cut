@@ -3027,6 +3027,7 @@ function prStart(){
   prSig = ''; prRender();
   prPoll();
   prTimer = setInterval(prPoll, 3000);
+  setTimeout(prJanitor, 4000);
 }
 function prStop(){ if(prTimer){ clearInterval(prTimer); prTimer = null; } }
 function prSetStatus(text, ok){
@@ -3094,10 +3095,34 @@ async function prFinish(it, status){
     prItems.delete(it.row.id);
     if(status === 'printed') prDone++;
     prRender();
-    // 사진 삭제 (실패해도 진행)
-    sbFetch(`/storage/v1/object/${SB_BUCKET}/${it.row.image_path}`, { method:'DELETE' }).catch(()=>{});
+    prDeleteFile(it.row);   // 사진 삭제 (실패해도 진행 — 못 지운 건 아래 청소 기능이 나중에 다시 지움)
   }catch(e){ alert('처리하지 못했어요: ' + sbErrText(e)); }
 }
+// 서버의 사진 파일 삭제 후, 표에 '삭제됨' 표시 (표시가 없는 건 청소 기능이 다시 시도)
+async function prDeleteFile(row){
+  try{
+    const r = await sbFetch(`/storage/v1/object/${SB_BUCKET}/${row.image_path}`, { method:'DELETE' });
+    if(r.ok || r.status === 404){
+      await sbFetch('/rest/v1/prints?id=eq.' + row.id, {
+        method:'PATCH', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ meta:{ file_deleted:true } })
+      });
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+// 완료/취소됐는데 사진이 남은 항목을 찾아 지움 (1분마다)
+let prCleaning = false;
+async function prJanitor(){
+  if(prCleaning || opMode !== 'printer') return;
+  prCleaning = true;
+  try{
+    const r = await sbFetch('/rest/v1/prints?select=id,image_path&status=in.(printed,cancelled)&meta->>file_deleted=is.null&order=id.asc&limit=20');
+    if(r.ok){ for(const row of await r.json()) await prDeleteFile(row); }
+  }catch(e){}
+  prCleaning = false;
+}
+setInterval(prJanitor, 60000);
 function prRender(){
   const items = [...prItems.values()];
   const sig = JSON.stringify([items.map(it => [it.row.id, it.state, !!it.dataUrl, it.loading, it.err]), prDone]);
